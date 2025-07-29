@@ -162,13 +162,8 @@ export async function generateContactSheet(
     // Update canvas with composited pixels
     const finalCanvas = new photon.PhotonImage(canvasPixels, canvasWidth, canvasHeight);
     
-    // Get final pixel data and encode with optimized settings
-    const pngBytes = encode(canvasPixels, canvasWidth, canvasHeight, {
-      // Use faster compression level while maintaining quality
-      level: 6, // Default is 9, 6 is good balance of speed/compression
-      // Enable filtering for better compression on photographic content
-      filter: 'auto'
-    });
+    // Get final pixel data and encode
+    const pngBytes = encode(canvasPixels, canvasWidth, canvasHeight);
     
     // Clean up
     canvas.free();

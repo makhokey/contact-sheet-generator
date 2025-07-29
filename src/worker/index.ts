@@ -287,6 +287,89 @@ app.get("/api/file/*", async (c) => {
   }
 });
 
+// Storage for progressive generation sessions
+const progressiveSessions = new Map<string, {
+  imageUrls: string[];
+  canvas: Uint8Array | null;
+  processedCount: number;
+  totalExpected: number;
+  columns: number;
+  thumbnailSize: number;
+  spacing: number;
+}>();
+
+// Progressive contact sheet generation endpoint
+app.post("/api/progressive-generate", async (c) => {
+  try {
+    const requestData = await c.req.json();
+    const { sessionId, imageUrls, isFirst, isComplete, totalExpected } = requestData;
+    
+    if (!sessionId) {
+      return c.json({ error: "Session ID required" }, 400);
+    }
+    
+    // Initialize session on first request
+    if (isFirst) {
+      progressiveSessions.set(sessionId, {
+        imageUrls: [],
+        canvas: null,
+        processedCount: 0,
+        totalExpected: totalExpected || 20,
+        columns: 4,
+        thumbnailSize: 200,
+        spacing: 10,
+      });
+    }
+    
+    const session = progressiveSessions.get(sessionId);
+    if (!session) {
+      return c.json({ error: "Invalid session" }, 400);
+    }
+    
+    // Add new images if provided
+    if (imageUrls && Array.isArray(imageUrls)) {
+      session.imageUrls.push(...imageUrls);
+    }
+    
+    // If complete flag is set, generate final contact sheet
+    if (isComplete && session.imageUrls.length > 0) {
+      const contactSheetBytes = await generateContactSheet(
+        session.imageUrls,
+        {
+          thumbnailSize: session.thumbnailSize,
+          columns: session.columns,
+          spacing: session.spacing,
+          backgroundColor: '#ffffff',
+        },
+        c.env.CONTACT_SHEET_BUCKET
+      );
+      
+      // Clean up session
+      progressiveSessions.delete(sessionId);
+      
+      return new Response(contactSheetBytes, {
+        headers: {
+          "Content-Type": "image/png",
+          "Content-Disposition": `attachment; filename="contact-sheet-${Date.now()}.png"`,
+          "Cache-Control": "no-cache",
+        },
+      });
+    }
+    
+    // Return progress update
+    return c.json({
+      sessionId,
+      processedCount: session.imageUrls.length,
+      totalExpected: session.totalExpected,
+      status: "processing",
+    });
+    
+  } catch (error) {
+    console.error("Progressive generation error:", error);
+    return c.json({ error: "Progressive generation failed" }, 500);
+  }
+});
+
 // Endpoint to generate contact sheet
 app.post("/api/generate-contact-sheet", async (c) => {
   let imageUrls: string[] = [];

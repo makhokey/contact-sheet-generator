@@ -20,7 +20,7 @@ export async function generateContactSheet(
     thumbnailSize: 200,
     columns: 4,
     spacing: 10,
-    backgroundColor: '#ffffff'
+    backgroundColor: '#000000'
   },
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _r2Bucket?: unknown

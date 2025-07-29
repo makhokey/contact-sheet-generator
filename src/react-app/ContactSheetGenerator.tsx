@@ -10,10 +10,14 @@ interface ContactSheetGeneratorProps {}
 
 const ContactSheetGenerator: React.FC<ContactSheetGeneratorProps> = () => {
   const [contactSheetUrl, setContactSheetUrl] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<
     Array<{ key: string; url: string }>
   >([]);
+  const [progressiveGeneration, setProgressiveGeneration] = useState<{
+    sessionId: string | null;
+    isActive: boolean;
+    processedCount: number;
+  }>({ sessionId: null, isActive: false, processedCount: 0 });
 
   const [uppy] = useState(() => {
     const uppyInstance = new Uppy({
@@ -79,8 +83,19 @@ const ContactSheetGenerator: React.FC<ContactSheetGeneratorProps> = () => {
     return uppyInstance;
   });
 
+  // Start progressive generation when first file is uploaded
+  const startProgressiveGeneration = async () => {
+    const sessionId = `session-${Date.now()}`;
+    setProgressiveGeneration({
+      sessionId,
+      isActive: true,
+      processedCount: 0,
+    });
+    return sessionId;
+  };
+
   useEffect(() => {
-    const handleUploadSuccess = (file: any, response: any) => {
+    const handleUploadSuccess = async (file: any, response: any) => {
       console.log("Upload success:", file, response);
       if (file && response) {
         // For R2 presigned URLs, the uploadURL is the final location
@@ -102,22 +117,88 @@ const ContactSheetGenerator: React.FC<ContactSheetGeneratorProps> = () => {
           console.log(`Clean URL: ${cleanUrl}`);
           console.log(`Custom Domain URL: ${customDomainUrl}`);
 
-          setUploadedFiles((prev) => [
-            ...prev,
-            { key: file.name, url: customDomainUrl },
-          ]);
+          setUploadedFiles((prev) => {
+            const newFiles = [...prev, { key: file.name, url: customDomainUrl }];
+            
+            // Start progressive generation on first file upload
+            if (prev.length === 0 && !progressiveGeneration.isActive) {
+              startProgressiveGeneration().then(sessionId => {
+                // Send first image to start generation
+                fetch("/api/progressive-generate", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    sessionId,
+                    imageUrls: [customDomainUrl],
+                    isFirst: true,
+                    totalExpected: uppy.getFiles().length,
+                  }),
+                }).catch(console.error);
+              });
+            } else if (progressiveGeneration.sessionId) {
+              // Add to existing generation
+              fetch("/api/progressive-generate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sessionId: progressiveGeneration.sessionId,
+                  imageUrls: [customDomainUrl],
+                  isFirst: false,
+                }),
+              }).catch(console.error);
+            }
+            
+            return newFiles;
+          });
         } else {
           console.warn("No upload URL found in response:", response);
         }
       }
     };
 
-    const handleComplete = (result: any) => {
+    const handleComplete = async (result: any) => {
       console.log("Upload complete:", result);
       if (result.successful && result.successful.length > 0) {
         result.successful.forEach((file: any) => {
           console.log("Successfully uploaded:", file.name);
         });
+        
+        // Finalize progressive generation
+        if (progressiveGeneration.sessionId) {
+          try {
+            const response = await fetch("/api/progressive-generate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                sessionId: progressiveGeneration.sessionId,
+                isComplete: true,
+              }),
+            });
+            
+            if (response.ok) {
+              const blob = await response.blob();
+              const blobUrl = URL.createObjectURL(blob);
+              setContactSheetUrl(blobUrl);
+              
+              // Auto-download
+              const filename = `contact-sheet-${Date.now()}.png`;
+              const link = document.createElement("a");
+              link.href = blobUrl;
+              link.download = filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              
+              setProgressiveGeneration({
+                sessionId: null,
+                isActive: false,
+                processedCount: 0,
+              });
+            }
+          } catch (error) {
+            console.error("Error finalizing contact sheet:", error);
+          }
+        }
       }
     };
 
@@ -134,59 +215,8 @@ const ContactSheetGenerator: React.FC<ContactSheetGeneratorProps> = () => {
       uppy.off("complete", handleComplete);
       uppy.off("upload-error", handleUploadError);
     };
-  }, [uppy]);
+  }, [uppy, progressiveGeneration]);
 
-  const generateContactSheet = async () => {
-    if (uploadedFiles.length === 0) {
-      alert("Please upload some images first");
-      return;
-    }
-
-    setIsGenerating(true);
-    try {
-      const response = await fetch("/api/generate-contact-sheet", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          imageUrls: uploadedFiles.map((file) => file.url),
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Failed to generate contact sheet: ${errorText}`);
-      }
-
-      // Get the blob data
-      const blob = await response.blob();
-
-      // Create a blob URL for preview
-      const blobUrl = URL.createObjectURL(blob);
-      setContactSheetUrl(blobUrl);
-
-      // Trigger automatic download
-      const contentDisposition = response.headers.get("content-disposition");
-      const filename = contentDisposition
-        ? contentDisposition.split("filename=")[1]?.replace(/"/g, "")
-        : `contact-sheet-${Date.now()}.png`;
-
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      console.log("Contact sheet generated and downloaded successfully");
-    } catch (error) {
-      console.error("Error generating contact sheet:", error);
-      alert(`Failed to generate contact sheet: ${error}`);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
 
   const resetUploader = () => {
     setUploadedFiles([]);
@@ -213,6 +243,24 @@ const ContactSheetGenerator: React.FC<ContactSheetGeneratorProps> = () => {
         />
       </div>
 
+      {progressiveGeneration.isActive && (
+        <div style={{
+          marginBottom: "20px",
+          padding: "15px",
+          backgroundColor: "#e3f2fd",
+          borderRadius: "6px",
+          border: "1px solid #90caf9",
+        }}>
+          <h4 style={{ margin: "0 0 5px 0", color: "#1976d2" }}>
+            🚀 Contact Sheet Generation in Progress
+          </h4>
+          <p style={{ margin: 0, color: "#666" }}>
+            Your contact sheet is being generated as images upload. 
+            It will be ready as soon as all uploads complete!
+          </p>
+        </div>
+      )}
+
       {uploadedFiles.length > 0 && (
         <div
           style={{
@@ -236,28 +284,6 @@ const ContactSheetGenerator: React.FC<ContactSheetGeneratorProps> = () => {
       )}
 
       <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
-        <button
-          onClick={generateContactSheet}
-          disabled={uploadedFiles.length === 0 || isGenerating}
-          style={{
-            padding: "12px 24px",
-            backgroundColor:
-              uploadedFiles.length > 0 && !isGenerating ? "#0070f3" : "#ccc",
-            color: "white",
-            border: "none",
-            borderRadius: "6px",
-            cursor:
-              uploadedFiles.length > 0 && !isGenerating
-                ? "pointer"
-                : "not-allowed",
-            fontSize: "16px",
-          }}
-        >
-          {isGenerating
-            ? "Generating..."
-            : `Generate Contact Sheet (${uploadedFiles.length} images)`}
-        </button>
-
         <button
           onClick={resetUploader}
           style={{
